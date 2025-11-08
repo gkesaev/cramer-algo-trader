@@ -1,0 +1,37 @@
+# Git
+.git
+.gitignore
+
+# Node
+node_modules
+npm-debug.log
+
+# Environment
+.env
+.env.*
+.runtimeconfig.json
+
+# Logs
+logs
+*.log
+
+# Documentation
+*.md
+!README.md
+
+# Deployment files
+deployment/
+.firebase
+.firebaserc
+firebase.json
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~

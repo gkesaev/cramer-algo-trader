@@ -1,0 +1,29 @@
+services:
+  cramer-bot:
+    build: .
+    container_name: cramer-algo-trader
+    restart: unless-stopped
+    environment:
+      - TZ=America/New_York
+      - NODE_ENV=production
+      # Cron schedule (minute hour day month weekday)
+      # Default: M-F at 10:00 AM ET
+      - CRON_SCHEDULE=0 10 * * 1-5
+      # Run immediately on startup (useful for testing)
+      - RUN_ON_STARTUP=false
+      # Paper trading (true) or live trading (false)
+      - PAPER_TRADING=true
+    env_file:
+      - ./functions/.env
+    volumes:
+      # Optional: Mount logs directory
+      - ./logs:/app/logs
+    # Service mode - runs continuously with internal scheduler
+    command: node bot-service.js
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN  # Required for Chromium sandboxing
