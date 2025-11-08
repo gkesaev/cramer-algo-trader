@@ -12,7 +12,7 @@ const Alpaca = require('@alpacahq/alpaca-trade-api');
 const alpaca = new Alpaca({
   keyId: functions.config().alpaca.id, // REPLACE with your API credentials
   secretKey: functions.config().alpaca.key, // REPLACE with your API credentials
-  // paper: true,
+  paper: true, // Using paper trading for testing
 });
 
 //// PUPPETEER Scrape Data from Twitter for better AI context ////
