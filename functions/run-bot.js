@@ -11,6 +11,10 @@ const puppeteer = require('puppeteer');
 console.log('🚀 Starting Cramer Algo Trader Bot...\n');
 console.log(`📅 Current time: ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })}`);
 
+// Configuration from environment
+const PAPER_TRADING = process.env.PAPER_TRADING !== 'false'; // Default: true (safe)
+console.log(`💼 Trading mode: ${PAPER_TRADING ? 'PAPER TRADING' : '⚠️  LIVE TRADING'}\n`);
+
 //// SDK Config ////
 const openai = new OpenAI({
   organization: process.env.OPENAI_ORG_ID || undefined,
@@ -20,8 +24,48 @@ const openai = new OpenAI({
 const alpaca = new Alpaca({
   keyId: process.env.ALPACA_API_KEY_ID,
   secretKey: process.env.ALPACA_SECRET_KEY,
-  paper: true, // Change to false for LIVE trading
+  paper: PAPER_TRADING,
 });
+
+//// HELPER FUNCTIONS ////
+
+// Validate if a string is a likely stock ticker
+function isValidTicker(ticker) {
+  if (!ticker || typeof ticker !== 'string') return false;
+
+  // Must be 1-5 uppercase letters (most tickers are 1-5 chars)
+  if (!/^[A-Z]{1,5}$/.test(ticker)) return false;
+
+  // Filter out common words that match ticker pattern
+  const blacklist = ['SELL', 'BUY', 'HOLD', 'NOT', 'DONT', 'NO', 'YES', 'ALL', 'ANY',
+                     'POSTS', 'POST', 'TWEET', 'TWEETS', 'FOLLOW', 'LIKE', 'REPLY',
+                     'NONE', 'SOME', 'MORE', 'LESS', 'MOST', 'BEST', 'WORST',
+                     'THE', 'AND', 'BUT', 'FOR', 'ARE', 'WAS', 'HAS', 'HAD'];
+
+  return !blacklist.includes(ticker);
+}
+
+// Check if market is currently open (simplified check)
+function isMarketHours() {
+  const now = new Date();
+  const etTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  const day = etTime.getDay(); // 0 = Sunday, 6 = Saturday
+  const hour = etTime.getHours();
+  const minute = etTime.getMinutes();
+  const timeInMinutes = hour * 60 + minute;
+
+  // Market closed on weekends
+  if (day === 0 || day === 6) {
+    return false;
+  }
+
+  // Market hours: 9:30 AM - 4:00 PM ET (570 minutes - 960 minutes)
+  const marketOpen = 9 * 60 + 30;  // 9:30 AM
+  const marketClose = 16 * 60;      // 4:00 PM
+
+  return timeInMinutes >= marketOpen && timeInMinutes < marketClose;
+}
 
 //// PUPPETEER Scrape Data from Twitter ////
 async function scrape() {
@@ -30,11 +74,11 @@ async function scrape() {
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
-  const page = await browser.newPage();
-
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
   try {
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
     await page.goto('https://twitter.com/jimcramer', {
       waitUntil: 'networkidle2',
       timeout: 30000
@@ -46,19 +90,27 @@ async function scrape() {
       return document.body.innerText;
     });
 
-    await browser.close();
     console.log('✅ Successfully scraped Twitter\n');
     return tweets;
   } catch (error) {
     console.error('❌ Error scraping Twitter:', error.message);
-    await browser.close();
     throw error;
+  } finally {
+    await browser.close();
   }
 }
 
 async function runBot() {
   try {
-    console.log('This will run M-F at 10:00 AM Eastern!');
+    // Check market hours
+    if (!isMarketHours()) {
+      console.log('⏸️  Market is currently closed - skipping execution\n');
+      console.log('💡 Market hours: Monday-Friday, 9:30 AM - 4:00 PM ET\n');
+      console.log('💡 This bot is designed to run M-F at 10:00 AM Eastern with scheduled cron jobs\n');
+      return null;
+    }
+
+    console.log('✅ Market is open - proceeding with execution\n');
 
     // Scrape tweets
     const tweets = await scrape();
@@ -84,11 +136,18 @@ async function runBot() {
       presence_penalty: 0,
     });
 
-    const stocksToBuy = gptCompletion.choices[0].message.content.match(/\b[A-Z]+\b/g);
-    console.log(`✅ Thanks for the tips Jim! ${stocksToBuy}\n`);
+    // Extract and validate tickers
+    const gptResponse = gptCompletion.choices[0].message.content;
+    console.log(`📝 GPT Response: "${gptResponse}"`);
 
-    if (!stocksToBuy) {
-      console.log('⏸️  Sitting this one out - no tickers found\n');
+    const rawTickers = gptResponse.match(/\b[A-Z]+\b/g) || [];
+    const cramerSellRecommendations = rawTickers.filter(isValidTicker);
+
+    console.log(`✅ Cramer says to SELL: ${cramerSellRecommendations.length > 0 ? cramerSellRecommendations.join(', ') : 'nothing specific'}`);
+    console.log(`🔄 Inverse Cramer strategy: We will BUY what he says to SELL\n`);
+
+    if (cramerSellRecommendations.length === 0) {
+      console.log('⏸️  Sitting this one out - no valid tickers found\n');
       return null;
     }
 
@@ -97,30 +156,50 @@ async function runBot() {
 
     // Close all positions
     console.log('📤 Canceling all open orders...');
-    const cancel = await alpaca.cancelAllOrders();
+    await alpaca.cancelAllOrders();
 
     console.log('💸 Closing all positions...');
-    const liquidate = await alpaca.closeAllPositions();
+    await alpaca.closeAllPositions();
 
-    // Get account
+    // Wait for positions to fully close (avoid race condition)
+    console.log('⏳ Waiting for positions to settle...');
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Get account and validate buying power
     const account = await alpaca.getAccount();
-    console.log(`💵 Dry powder: $${parseFloat(account.buying_power).toFixed(2)}`);
+    const buyingPower = parseFloat(account.buying_power);
 
-    // Place order
-    const orderAmount = parseFloat(account.buying_power) * 0.9;
-    console.log(`🎯 Placing order for ${stocksToBuy[0]} with $${orderAmount.toFixed(2)}...`);
+    if (isNaN(buyingPower) || buyingPower <= 0) {
+      console.log(`❌ Invalid buying power: $${account.buying_power}\n`);
+      throw new Error('Invalid buying power');
+    }
+
+    console.log(`💵 Buying power: $${buyingPower.toFixed(2)}`);
+
+    // Calculate order amount (90% of buying power)
+    const orderAmount = buyingPower * 0.9;
+
+    // Validate minimum order amount ($1)
+    if (orderAmount < 1) {
+      console.log(`❌ Insufficient funds: $${orderAmount.toFixed(2)} (minimum $1 required)\n`);
+      throw new Error('Insufficient funds');
+    }
+
+    const targetSymbol = cramerSellRecommendations[0];
+    console.log(`🎯 Placing order for ${targetSymbol} with $${orderAmount.toFixed(2)} (90% of buying power)...`);
 
     const order = await alpaca.createOrder({
-      symbol: stocksToBuy[0],
+      symbol: targetSymbol,
       notional: orderAmount, // will buy fractional shares
       side: 'buy',
       type: 'market',
       time_in_force: 'day',
     });
 
-    console.log(`\n✅ Look mom I bought stonks!`);
+    console.log(`\n✅ Order placed successfully!`);
     console.log(`   Order ID: ${order.id}`);
     console.log(`   Symbol: ${order.symbol}`);
+    console.log(`   Side: ${order.side}`);
     console.log(`   Status: ${order.status}`);
     console.log(`   Submitted at: ${new Date(order.submitted_at).toLocaleString()}\n`);
 

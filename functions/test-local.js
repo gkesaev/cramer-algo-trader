@@ -24,6 +24,24 @@ const alpaca = new Alpaca({
   paper: true, // Using paper trading for testing
 });
 
+//// HELPER FUNCTIONS ////
+
+// Validate if a string is a likely stock ticker
+function isValidTicker(ticker) {
+  if (!ticker || typeof ticker !== 'string') return false;
+
+  // Must be 1-5 uppercase letters (most tickers are 1-5 chars)
+  if (!/^[A-Z]{1,5}$/.test(ticker)) return false;
+
+  // Filter out common words that match ticker pattern
+  const blacklist = ['SELL', 'BUY', 'HOLD', 'NOT', 'DONT', 'NO', 'YES', 'ALL', 'ANY',
+                     'POSTS', 'POST', 'TWEET', 'TWEETS', 'FOLLOW', 'LIKE', 'REPLY',
+                     'NONE', 'SOME', 'MORE', 'LESS', 'MOST', 'BEST', 'WORST',
+                     'THE', 'AND', 'BUT', 'FOR', 'ARE', 'WAS', 'HAS', 'HAD'];
+
+  return !blacklist.includes(ticker);
+}
+
 //// PUPPETEER Scrape Data from Twitter ////
 async function scrape() {
   console.log('🐦 Launching browser to scrape Twitter...');
@@ -31,11 +49,11 @@ async function scrape() {
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
-  const page = await browser.newPage();
-
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
   try {
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
     await page.goto('https://twitter.com/jimcramer', {
       waitUntil: 'networkidle2',
       timeout: 30000
@@ -47,15 +65,15 @@ async function scrape() {
       return document.body.innerText;
     });
 
-    await browser.close();
     console.log('✅ Successfully scraped Twitter\n');
     console.log('📝 First 500 characters of scraped content:');
     console.log(tweets.substring(0, 500) + '...\n');
     return tweets;
   } catch (error) {
     console.error('❌ Error scraping Twitter:', error.message);
-    await browser.close();
     throw error;
+  } finally {
+    await browser.close();
   }
 }
 
@@ -100,9 +118,13 @@ async function testOpenAI(tweets) {
     const response = gptCompletion.choices[0].message.content;
     console.log('✅ OpenAI response:', response);
 
-    const stocksToBuy = response.match(/\b[A-Z]+\b/g);
-    console.log('📊 Extracted tickers:', stocksToBuy || 'None found\n');
-    return stocksToBuy;
+    const rawTickers = response.match(/\b[A-Z]+\b/g) || [];
+    const validTickers = rawTickers.filter(isValidTicker);
+
+    console.log('📊 Raw extracted:', rawTickers.length > 0 ? rawTickers.join(', ') : 'None');
+    console.log('📊 Valid tickers:', validTickers.length > 0 ? validTickers.join(', ') : 'None\n');
+
+    return validTickers;
   } catch (error) {
     console.error('❌ Error calling OpenAI:', error.message);
     throw error;
@@ -124,19 +146,27 @@ async function runFullTest() {
     console.log('='.repeat(60));
     console.log('TEST 3: OpenAI Analysis');
     console.log('='.repeat(60));
-    const stocksToBuy = await testOpenAI(tweets);
+    const cramerSellRecommendations = await testOpenAI(tweets);
 
     console.log('='.repeat(60));
     console.log('TEST 4: Trading Logic (DRY RUN)');
     console.log('='.repeat(60));
 
-    if (!stocksToBuy || stocksToBuy.length === 0) {
-      console.log('⏸️  No stock tickers found - sitting this one out\n');
+    if (cramerSellRecommendations.length === 0) {
+      console.log('⏸️  No valid stock tickers found - sitting this one out\n');
       return;
     }
 
-    console.log(`\n🎯 Would buy: ${stocksToBuy[0]}`);
-    console.log(`💵 Would use: $${(parseFloat(account.buying_power) * 0.9).toFixed(2)} (90% of buying power)`);
+    console.log(`\n✅ Cramer says to SELL: ${cramerSellRecommendations.join(', ')}`);
+    console.log(`🔄 Inverse Cramer strategy: We will BUY what he says to SELL\n`);
+
+    const targetSymbol = cramerSellRecommendations[0];
+    const buyingPower = parseFloat(account.buying_power);
+    const orderAmount = buyingPower * 0.9;
+
+    console.log(`🎯 Target symbol: ${targetSymbol}`);
+    console.log(`💵 Buying power: $${buyingPower.toFixed(2)}`);
+    console.log(`💰 Order amount: $${orderAmount.toFixed(2)} (90% of buying power)`);
     console.log(`\n⚠️  This is a DRY RUN - no actual trades executed`);
     console.log(`   To execute real trades, uncomment the trading code in test-local.js\n`);
 
