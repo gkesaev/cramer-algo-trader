@@ -26,6 +26,33 @@ const alpaca = new Alpaca({
 
 //// HELPER FUNCTIONS ////
 
+// US Market Holidays 2025 (update yearly)
+const MARKET_HOLIDAYS_2025 = [
+  '2025-01-01', // New Year's Day
+  '2025-01-20', // Martin Luther King Jr. Day
+  '2025-02-17', // Presidents' Day
+  '2025-04-18', // Good Friday
+  '2025-05-26', // Memorial Day
+  '2025-06-19', // Juneteenth
+  '2025-07-04', // Independence Day
+  '2025-09-01', // Labor Day
+  '2025-11-27', // Thanksgiving
+  '2025-12-25', // Christmas
+];
+
+// Check if today is a market holiday
+function isMarketHoliday() {
+  const now = new Date();
+  const etTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  const year = etTime.getFullYear();
+  const month = String(etTime.getMonth() + 1).padStart(2, '0');
+  const day = String(etTime.getDate()).padStart(2, '0');
+  const dateString = `${year}-${month}-${day}`;
+
+  return MARKET_HOLIDAYS_2025.includes(dateString);
+}
+
 // Validate if a string is a likely stock ticker
 function isValidTicker(ticker) {
   if (!ticker || typeof ticker !== 'string') return false;
@@ -40,6 +67,37 @@ function isValidTicker(ticker) {
                      'THE', 'AND', 'BUT', 'FOR', 'ARE', 'WAS', 'HAS', 'HAD'];
 
   return !blacklist.includes(ticker);
+}
+
+// Validate ticker is tradable via Alpaca API
+async function isTickerTradable(ticker) {
+  try {
+    const asset = await alpaca.getAsset(ticker);
+
+    // Check if asset is tradable
+    if (!asset.tradable) {
+      console.log(`   ⚠️  ${ticker} exists but is not tradable`);
+      return false;
+    }
+
+    // Check if asset is active
+    if (asset.status !== 'active') {
+      console.log(`   ⚠️  ${ticker} status: ${asset.status} (not active)`);
+      return false;
+    }
+
+    // Check if asset is fractionable (we use notional orders)
+    if (!asset.fractionable) {
+      console.log(`   ⚠️  ${ticker} is not fractionable`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    // Asset not found or API error
+    console.log(`   ❌ ${ticker} validation failed: ${error.message}`);
+    return false;
+  }
 }
 
 //// PUPPETEER Scrape Data from Twitter ////

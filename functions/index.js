@@ -21,6 +21,33 @@ const alpaca = new Alpaca({
 
 //// HELPER FUNCTIONS ////
 
+// US Market Holidays 2025 (update yearly)
+const MARKET_HOLIDAYS_2025 = [
+  '2025-01-01', // New Year's Day
+  '2025-01-20', // Martin Luther King Jr. Day
+  '2025-02-17', // Presidents' Day
+  '2025-04-18', // Good Friday
+  '2025-05-26', // Memorial Day
+  '2025-06-19', // Juneteenth
+  '2025-07-04', // Independence Day
+  '2025-09-01', // Labor Day
+  '2025-11-27', // Thanksgiving
+  '2025-12-25', // Christmas
+];
+
+// Check if today is a market holiday
+function isMarketHoliday() {
+  const now = new Date();
+  const etTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  const year = etTime.getFullYear();
+  const month = String(etTime.getMonth() + 1).padStart(2, '0');
+  const day = String(etTime.getDate()).padStart(2, '0');
+  const dateString = `${year}-${month}-${day}`;
+
+  return MARKET_HOLIDAYS_2025.includes(dateString);
+}
+
 // Validate if a string is a likely stock ticker
 function isValidTicker(ticker) {
   if (!ticker || typeof ticker !== 'string') return false;
@@ -37,7 +64,7 @@ function isValidTicker(ticker) {
   return !blacklist.includes(ticker);
 }
 
-// Check if market is currently open (simplified check)
+// Check if market is currently open
 function isMarketHours() {
   const now = new Date();
   const etTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
@@ -52,11 +79,47 @@ function isMarketHours() {
     return false;
   }
 
+  // Market closed on holidays
+  if (isMarketHoliday()) {
+    return false;
+  }
+
   // Market hours: 9:30 AM - 4:00 PM ET (570 minutes - 960 minutes)
   const marketOpen = 9 * 60 + 30;  // 9:30 AM
   const marketClose = 16 * 60;      // 4:00 PM
 
   return timeInMinutes >= marketOpen && timeInMinutes < marketClose;
+}
+
+// Validate ticker is tradable via Alpaca API
+async function isTickerTradable(ticker) {
+  try {
+    const asset = await alpaca.getAsset(ticker);
+
+    // Check if asset is tradable
+    if (!asset.tradable) {
+      console.log(`   ⚠️  ${ticker} exists but is not tradable`);
+      return false;
+    }
+
+    // Check if asset is active
+    if (asset.status !== 'active') {
+      console.log(`   ⚠️  ${ticker} status: ${asset.status} (not active)`);
+      return false;
+    }
+
+    // Check if asset is fractionable (we use notional orders)
+    if (!asset.fractionable) {
+      console.log(`   ⚠️  ${ticker} is not fractionable`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    // Asset not found or API error
+    console.log(`   ❌ ${ticker} validation failed: ${error.message}`);
+    return false;
+  }
 }
 
 //// PUPPETEER Scrape Data from Twitter for better AI context ////
@@ -158,6 +221,26 @@ exports.getRichQuick = functions
         return null;
       }
 
+      // Validate tickers are tradable via Alpaca
+      console.log('🔍 Validating tickers with Alpaca...');
+      const tradableChecks = await Promise.all(
+        cramerSellRecommendations.map(async (ticker) => ({
+          ticker,
+          tradable: await isTickerTradable(ticker)
+        }))
+      );
+
+      const tradableTickers = tradableChecks
+        .filter(check => check.tradable)
+        .map(check => check.ticker);
+
+      if (tradableTickers.length === 0) {
+        console.log('⏸️  No tradable tickers found after validation');
+        return null;
+      }
+
+      console.log(`✅ Tradable tickers: ${tradableTickers.join(', ')}\n`);
+
       //// ALPACA Make Trades ////
       console.log('💰 Executing trading strategy...');
 
@@ -192,7 +275,7 @@ exports.getRichQuick = functions
         throw new Error('Insufficient funds');
       }
 
-      const targetSymbol = cramerSellRecommendations[0];
+      const targetSymbol = tradableTickers[0];
       console.log(`🎯 Placing order for ${targetSymbol} with $${orderAmount.toFixed(2)} (90% of buying power)...`);
 
       // place order
